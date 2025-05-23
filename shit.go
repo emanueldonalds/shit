@@ -13,128 +13,195 @@ import (
 )
 
 const SHIT_PATH = ".shit"
+const BOWL_PATH = SHIT_PATH + "/bowl"
 const OBJECTS_PATH = SHIT_PATH + "/objects"
 
 type Command struct {
-	action string
-	args   []string
+	Action string
+	Args   []string
 }
 
 type Header struct {
-	object_type string
-	len         int
+	ObjectType string
+	Len        int
+}
+
+type Object struct {
+	ObjectType string
+	Hash       string
+	Path       string
+	Bytes      []byte
 }
 
 func main() {
-	var command *Command = parse_args()
+	var command *Command = parseArgs()
 
-	if command.action == "--help" {
-		exit_usage()
+	if command.Action == "--help" {
+		exitUsage()
 	}
 
-	check_init(command.action)
+	checkInit(command.Action)
 
-	switch command.action {
+	switch command.Action {
 	case "init":
-		init_shit()
+		initShit()
 	case "add":
-		add(command.args)
+		add(command.Args)
 	case "get-object":
-		get_object(command.args)
+		getObject(command.Args)
 	default:
-		exit_usage()
+		exitUsage()
 	}
 }
 
-func parse_args() *Command {
+func parseArgs() *Command {
 	if len(os.Args) < 2 {
-		exit_usage()
+		exitUsage()
 	}
 
-	return &Command{action: os.Args[1], args: os.Args[2:]}
+	return &Command{Action: os.Args[1], Args: os.Args[2:]}
 }
 
-func check_init(action string) {
+func checkInit(action string) {
 	_, err := os.Stat(SHIT_PATH)
-	dir_is_tracked := err == nil
+	dirIsTracked := err == nil
 
-	if !dir_is_tracked && action == "init" {
+	if !dirIsTracked && action == "init" {
 		return
-	} else if dir_is_tracked && action == "init" {
+	} else if dirIsTracked && action == "init" {
 		fmt.Println("Directory is already tracked by Shit, aborting init.")
-		exit_usage()
-	} else if !dir_is_tracked {
+		exitUsage()
+	} else if !dirIsTracked {
 		fmt.Println("Directory is not tracked by Shit, initialize dir with \"shit init\" first.")
-		exit_usage()
+		exitUsage()
 	}
 
 }
 
-func init_shit() {
-	err := os.Mkdir(SHIT_PATH, 0775)
-	if err != nil {
+func initShit() {
+	if err := os.Mkdir(SHIT_PATH, 0775); err != nil {
+		panic(err)
+	}
+
+	if err := os.Mkdir(OBJECTS_PATH, 0775); err != nil {
+		panic(err)
+	}
+
+	if _, err := os.Create(BOWL_PATH); err != nil {
 		panic(err)
 	}
 }
 
 func add(args []string) {
 	if len(args) < 1 {
-		exit_usage()
+		exitUsage()
 	}
 
-	var in_file_path = args[0]
-	var file_content string = read_file(in_file_path)
-	var content_bytes []byte = add_header(file_content)
-	var compressed_object = compress(content_bytes)
+	var path string = args[0]
+	bowl := getBowl()
 
-	var object_path = fmt.Sprintf(OBJECTS_PATH+"/%s", hash(content_bytes))
-	write_file(object_path, compressed_object)
+	object := createFileObject(path)
+	bowl = appendBowl(bowl, object)
+
+	writeBowl(bowl)
 }
 
-func read_object(hash string) string {
-	var object_path = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
+func createFileObject(path string) *Object {
+	var fileContent string = readFile(path)
+	var bytes []byte = addHeader(fileContent)
+	var hash string = hash(bytes)
+	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
 
-	var object_reader, err = os.Open(object_path)
+	writeFile(objectPath, compress(bytes))
+	return &Object{ObjectType: "file", Hash: hash, Path: path, Bytes: bytes}
+}
+
+func getBowl() []*Object {
+	bowlFile := readFile(BOWL_PATH)
+	bowlLines := strings.Split(bowlFile, "\n")
+	var bowl []*Object
+
+	if bowlLines[0] == "" {
+		return bowl
+	}
+
+	for _, line := range bowlLines {
+		if line == "" {
+			continue
+		}
+
+		lineParts := strings.Split(line, " ")
+		bowl = append(bowl, &Object{ObjectType: lineParts[0], Hash: lineParts[1], Path: lineParts[2]})
+	}
+
+	return bowl
+}
+
+func writeBowl(bowl []*Object) {
+	var buf bytes.Buffer
+	for _, bowlObject := range bowl {
+		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlObject.ObjectType, bowlObject.Hash, bowlObject.Path))
+	}
+	writeFile(BOWL_PATH, buf)
+}
+
+func appendBowl(bowl []*Object, newObject *Object) []*Object {
+	var newBowl []*Object
+
+	for _, oldObject := range bowl {
+		if oldObject.Path != newObject.Path {
+			newBowl = append(newBowl, oldObject)
+		}
+	}
+
+	newBowl = append(newBowl, newObject)
+	return newBowl
+}
+
+func readObject(hash string) string {
+	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
+
+	var objectReader, err = os.Open(objectPath)
 	if err != nil {
 		panic(err)
 	}
 
 	buf := new(strings.Builder)
 
-	r, err := zlib.NewReader(object_reader)
+	r, err := zlib.NewReader(objectReader)
 	if err != nil {
 		panic(err)
 	}
 
 	io.Copy(buf, r)
 
-	object_reader.Close()
+	objectReader.Close()
 	r.Close()
 
 	return buf.String()
 }
 
-func get_object(args []string) {
+func getObject(args []string) {
 	if len(args) < 1 {
-		exit_usage()
+		exitUsage()
 	}
 
 	hash := args[0]
-	object := read_object(hash)
-	object_type := get_object_type(object)
-	var header_len int
-	switch object_type {
+	object := readObject(hash)
+	objectType := getObjectType(object)
+	var headerLen int
+	switch objectType {
 	case "file":
-		header_len = get_header(object).len
+		headerLen = getHeader(object).Len
 	default:
 		panic("Unknown object type")
 	}
-	content := object[header_len:]
+	content := object[headerLen:]
 
 	fmt.Print(content)
 }
 
-func get_object_type(object string) string {
+func getObjectType(object string) string {
 	buf := new(strings.Builder)
 	for _, c := range object {
 		if c == '\n' {
@@ -145,7 +212,24 @@ func get_object_type(object string) string {
 	panic("Could not read object type")
 }
 
-func add_header(content string) []byte {
+func getHeader(object string) *Header {
+	var headerLen int
+	line := 0
+	for i, c := range object {
+		if line == 2 {
+			headerLen = i
+			break
+		}
+		if c == '\n' {
+			line = line + 1
+		}
+	}
+
+	headerLines := strings.Split(object[:headerLen], "\n")
+	return &Header{ObjectType: headerLines[0], Len: headerLen}
+}
+
+func addHeader(content string) []byte {
 	// File object format:
 
 	// type
@@ -157,24 +241,16 @@ func add_header(content string) []byte {
 	return []byte(parts)
 }
 
-func get_header(object string) *Header {
-	var header_len int
-	line := 0
-	for i, c := range object {
-		if line == 2 {
-			header_len = i
-			break
-		}
-		if c == '\n' {
-			line = line + 1
-		}
-	}
+func readFile(path string) string {
+	var bytes, err = os.ReadFile(path)
 
-	header_lines := strings.Split(object[:header_len], "\n")
-	return &Header{object_type: header_lines[0], len: header_len}
+	if err != nil {
+		panic(err)
+	}
+	return string(bytes)
 }
 
-func write_file(path string, buf bytes.Buffer) {
+func writeFile(path string, buf bytes.Buffer) {
 	file, err := os.Create(path)
 
 	if err != nil {
@@ -188,15 +264,6 @@ func write_file(path string, buf bytes.Buffer) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-func read_file(path string) string {
-	var bytes, err = os.ReadFile(path)
-
-	if err != nil {
-		panic(err)
-	}
-	return string(bytes)
 }
 
 func hash(bytes []byte) string {
@@ -213,7 +280,7 @@ func compress(b []byte) bytes.Buffer {
 	return buf
 }
 
-func exit_usage() {
+func exitUsage() {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	fmt.Fprintln(w, "Usage:\n\nshit init\tInitialize Shit repository\nshit add <filename>\tAdd a file to the the index\nshit flush <filename>\tWrite the current index to a commit\nshit sniff\tShow the current status of the index\tshit get-object\tGet an object from the object store")
 	w.Flush()
