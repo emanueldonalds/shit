@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 )
@@ -44,11 +46,11 @@ func main() {
 
 	switch command.Action {
 	case "init":
-		initShit()
+		cmdInitShit()
 	case "add":
-		add(command.Args)
+		cmdAdd(command.Args)
 	case "get-object":
-		getObject(command.Args)
+		cmdGetObject(command.Args)
 	default:
 		exitUsage()
 	}
@@ -78,7 +80,7 @@ func checkInit(action string) {
 
 }
 
-func initShit() {
+func cmdInitShit() {
 	if err := os.Mkdir(SHIT_PATH, 0775); err != nil {
 		panic(err)
 	}
@@ -92,28 +94,64 @@ func initShit() {
 	}
 }
 
-func add(args []string) {
+func cmdAdd(args []string) {
 	if len(args) < 1 {
 		exitUsage()
 	}
 
-	var path string = args[0]
 	bowl := getBowl()
+	var paths []string
 
-	object := createFileObject(path)
-	bowl = appendBowl(bowl, object)
+	if args[0] == "-A" {
+		paths = getWorkdir()
+	} else {
+		paths = append(paths, args[0])
+	}
+
+	for _, path := range paths {
+		object := createFileObject(path)
+		bowl = appendBowl(bowl, object)
+	}
 
 	writeBowl(bowl)
 }
 
-func createFileObject(path string) *Object {
-	var fileContent string = readFile(path)
-	var bytes []byte = addHeader(fileContent)
-	var hash string = hash(bytes)
-	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
+func cmdGetObject(args []string) {
+	if len(args) < 1 {
+		exitUsage()
+	}
 
-	writeFile(objectPath, compress(bytes))
-	return &Object{ObjectType: "file", Hash: hash, Path: path, Bytes: bytes}
+	hash := args[0]
+	object := getObject(hash)
+	objectType := getObjectType(object)
+	var headerLen int
+
+	switch objectType {
+	case "file":
+		headerLen = getHeader(object).Len
+	default:
+		panic("Unknown object type")
+	}
+
+	content := object[headerLen:]
+	fmt.Print(content)
+}
+
+func getWorkdir() []string {
+	var dir []string
+
+	var walkDirFunc fs.WalkDirFunc = func(path string, d fs.DirEntry, err error) error {
+		if strings.Contains(path, ".git") || strings.Contains(path, ".shit") {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			dir = append(dir, path)
+		}
+		return nil
+	}
+
+	filepath.WalkDir(".", walkDirFunc)
+	return dir
 }
 
 func getBowl() []*Object {
@@ -158,7 +196,7 @@ func appendBowl(bowl []*Object, newObject *Object) []*Object {
 	return newBowl
 }
 
-func readObject(hash string) string {
+func getObject(hash string) string {
 	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
 
 	var objectReader, err = os.Open(objectPath)
@@ -168,37 +206,26 @@ func readObject(hash string) string {
 
 	buf := new(strings.Builder)
 
-	r, err := zlib.NewReader(objectReader)
+	compressReader, err := zlib.NewReader(objectReader)
 	if err != nil {
 		panic(err)
 	}
 
-	io.Copy(buf, r)
-
+	io.Copy(buf, compressReader)
 	objectReader.Close()
-	r.Close()
+	compressReader.Close()
 
 	return buf.String()
 }
 
-func getObject(args []string) {
-	if len(args) < 1 {
-		exitUsage()
-	}
+func createFileObject(path string) *Object {
+	var fileContent string = readFile(path)
+	var bytes []byte = addHeader("file", fileContent)
+	var hash string = hash(bytes)
+	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
 
-	hash := args[0]
-	object := readObject(hash)
-	objectType := getObjectType(object)
-	var headerLen int
-	switch objectType {
-	case "file":
-		headerLen = getHeader(object).Len
-	default:
-		panic("Unknown object type")
-	}
-	content := object[headerLen:]
-
-	fmt.Print(content)
+	writeFile(objectPath, compress(bytes))
+	return &Object{ObjectType: "file", Hash: hash, Path: path, Bytes: bytes}
 }
 
 func getObjectType(object string) string {
@@ -229,14 +256,14 @@ func getHeader(object string) *Header {
 	return &Header{ObjectType: headerLines[0], Len: headerLen}
 }
 
-func addHeader(content string) []byte {
-	// File object format:
+func addHeader(objectType string, content string) []byte {
+	// Object format:
 
 	// type
 	// <empty-line>
 	// content
 
-	var parts = strings.Join([]string{"file", "", content}, "\n")
+	var parts = strings.Join([]string{objectType, "", content}, "\n")
 
 	return []byte(parts)
 }
