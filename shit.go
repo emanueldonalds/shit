@@ -31,8 +31,12 @@ type Header struct {
 type Object struct {
 	ObjectType string
 	Hash       string
-	Path       string
 	Bytes      []byte
+}
+
+type BowlEntry struct {
+	Path   string
+	Object *Object
 }
 
 func main() {
@@ -51,6 +55,10 @@ func main() {
 		cmdAdd(command.Args)
 	case "get-object":
 		cmdGetObject(command.Args)
+	case "flush":
+		cmdFlush(command.Args)
+	case "create-tree":
+		cmdCreateTree()
 	default:
 		exitUsage()
 	}
@@ -109,8 +117,9 @@ func cmdAdd(args []string) {
 	}
 
 	for _, path := range paths {
-		object := createFileObject(path)
-		bowl = appendBowl(bowl, object)
+		object := createObject("file", readFile(path))
+		bowlEntry := &BowlEntry{Object: object, Path: path}
+		bowl = appendBowl(bowl, bowlEntry)
 	}
 
 	writeBowl(bowl)
@@ -123,18 +132,53 @@ func cmdGetObject(args []string) {
 
 	hash := args[0]
 	object := getObject(hash)
-	objectType := getObjectType(object)
 	var headerLen int
 
-	switch objectType {
-	case "file":
-		headerLen = getHeader(object).Len
-	default:
-		panic("Unknown object type")
-	}
+	headerLen = getHeader(object).Len
 
 	content := object[headerLen:]
 	fmt.Print(content)
+}
+
+func cmdFlush(args []string) {
+	if len(args) < 1 {
+		fmt.Println("A message is required when flusing (-m <message>).")
+		exitUsage()
+	}
+
+	fmt.Println("TBD")
+}
+
+func cmdCreateTree() {
+	bowl := getBowl()
+	tree := createTree(bowl)
+	fmt.Println(string(tree.Bytes))
+}
+
+func createTree(bowlEntries []*BowlEntry) *Object {
+	tree := make(map[string]*Object)
+	subtrees := make(map[string][]*BowlEntry)
+
+	for _, bowlEntry := range bowlEntries {
+		dir, file := filepath.Split(bowlEntry.Path)
+		if dir == "" {
+			tree[file] = bowlEntry.Object
+		} else {
+			bowlEntry.Path = file
+			subtrees[dir] = append(subtrees[dir], bowlEntry)
+		}
+	}
+
+	for dir, subtree := range subtrees {
+		tree[dir] = createTree(subtree)
+	}
+
+	treeObjectBuf := new(strings.Builder)
+	for name, treeObject := range tree {
+		treeObjectBuf.WriteString(fmt.Sprintf("%s %s %s\n", treeObject.ObjectType, treeObject.Hash, name))
+	}
+
+	return createObject("tree", treeObjectBuf.String())
 }
 
 func getWorkdir() []string {
@@ -154,10 +198,10 @@ func getWorkdir() []string {
 	return dir
 }
 
-func getBowl() []*Object {
+func getBowl() []*BowlEntry {
 	bowlFile := readFile(BOWL_PATH)
 	bowlLines := strings.Split(bowlFile, "\n")
-	var bowl []*Object
+	var bowl []*BowlEntry
 
 	if bowlLines[0] == "" {
 		return bowl
@@ -169,30 +213,31 @@ func getBowl() []*Object {
 		}
 
 		lineParts := strings.Split(line, " ")
-		bowl = append(bowl, &Object{ObjectType: lineParts[0], Hash: lineParts[1], Path: lineParts[2]})
+		object := &Object{ObjectType: lineParts[0], Hash: lineParts[1]}
+		bowl = append(bowl, &BowlEntry{Object: object, Path: lineParts[2]})
 	}
 
 	return bowl
 }
 
-func writeBowl(bowl []*Object) {
+func writeBowl(bowl []*BowlEntry) {
 	var buf bytes.Buffer
-	for _, bowlObject := range bowl {
-		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlObject.ObjectType, bowlObject.Hash, bowlObject.Path))
+	for _, bowlEntry := range bowl {
+		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlEntry.Object.ObjectType, bowlEntry.Object.Hash, bowlEntry.Path))
 	}
 	writeFile(BOWL_PATH, buf)
 }
 
-func appendBowl(bowl []*Object, newObject *Object) []*Object {
-	var newBowl []*Object
+func appendBowl(bowl []*BowlEntry, newEntry *BowlEntry) []*BowlEntry {
+	var newBowl []*BowlEntry
 
-	for _, oldObject := range bowl {
-		if oldObject.Path != newObject.Path {
-			newBowl = append(newBowl, oldObject)
+	for _, oldEntry := range bowl {
+		if oldEntry.Path != newEntry.Path {
+			newBowl = append(newBowl, oldEntry)
 		}
 	}
 
-	newBowl = append(newBowl, newObject)
+	newBowl = append(newBowl, newEntry)
 	return newBowl
 }
 
@@ -218,25 +263,13 @@ func getObject(hash string) string {
 	return buf.String()
 }
 
-func createFileObject(path string) *Object {
-	var fileContent string = readFile(path)
-	var bytes []byte = addHeader("file", fileContent)
+func createObject(objectType string, content string) *Object {
+	var bytes []byte = addHeader(objectType, content)
 	var hash string = hash(bytes)
 	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
 
 	writeFile(objectPath, compress(bytes))
-	return &Object{ObjectType: "file", Hash: hash, Path: path, Bytes: bytes}
-}
-
-func getObjectType(object string) string {
-	buf := new(strings.Builder)
-	for _, c := range object {
-		if c == '\n' {
-			return buf.String()
-		}
-		buf.WriteRune(c)
-	}
-	panic("Could not read object type")
+	return &Object{ObjectType: objectType, Hash: hash, Bytes: bytes}
 }
 
 func getHeader(object string) *Header {
