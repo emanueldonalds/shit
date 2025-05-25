@@ -8,8 +8,4 @@ echo "Another line" >> test.txt
 go run shit.go init
 go run shit.go add test.txt
 
-hash=$(ls .shit/objects)
-
-rm test.txt
-
-go run shit.go get-object "$hash" > test.txt
+go run shit.go flush -m "Flush message"

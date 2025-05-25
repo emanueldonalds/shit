@@ -13,9 +13,11 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 const SHIT_PATH = ".shit"
+const HEAD_PATH = SHIT_PATH + "/HEAD"
 const BOWL_PATH = SHIT_PATH + "/bowl"
 const OBJECTS_PATH = SHIT_PATH + "/objects"
 
@@ -32,6 +34,8 @@ type Header struct {
 type Object struct {
 	ObjectType string
 	Hash       string
+	Header     *Header
+	Content    string
 	Bytes      []byte
 }
 
@@ -101,6 +105,10 @@ func cmdInitShit() {
 	if _, err := os.Create(BOWL_PATH); err != nil {
 		panic(err)
 	}
+
+	if _, err := os.Create(HEAD_PATH); err != nil {
+		panic(err)
+	}
 }
 
 func cmdAdd(args []string) {
@@ -133,21 +141,70 @@ func cmdGetObject(args []string) {
 
 	hash := args[0]
 	object := getObject(hash)
-	var headerLen int
-
-	headerLen = getHeader(object).Len
-
-	content := object[headerLen:]
-	fmt.Print(content)
+	fmt.Print(string(object.Bytes))
 }
 
 func cmdFlush(args []string) {
-	if len(args) < 1 {
+	if len(args) < 2 || args[0] != "-m" {
 		fmt.Println("A message is required when flusing (-m <message>).")
 		exitUsage()
 	}
 
-	fmt.Println("TBD")
+	message := args[1]
+
+	bowl := getBowl()
+	if len(bowl) == 0 {
+		fmt.Println("Your bowl is empty, add files to bowl with \"flush add <filename>\" first.")
+		exitUsage()
+	}
+
+	tree := createTree(bowl)
+	parent := getHead()
+	createFlush(tree, parent, message)
+}
+
+func createFlush(tree *Object, parent *Object, message string) {
+	flushContent := new(strings.Builder)
+
+	flushContent.WriteString("time " + time.Now().UTC().String() + "\n")
+	flushContent.WriteString("parent ")
+	if parent != nil {
+		flushContent.WriteString(parent.Hash)
+	}
+	flushContent.WriteString("\n")
+
+	flushContent.WriteString("tree " + tree.Hash + "\n")
+	flushContent.WriteString("\n")
+	flushContent.WriteString(message)
+
+	flush := createObject("flush", flushContent.String())
+
+	fmt.Println("Created flush " + flush.Hash + "\n============================")
+	fmt.Println(string(flush.Bytes))
+
+	// Update head
+	err := os.WriteFile(SHIT_PATH+"/HEAD", []byte(flush.Hash), 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	// Clear bowl
+	f := new(bytes.Buffer)
+	writeFile(BOWL_PATH, *f)
+}
+
+func getHead() *Object {
+	headFile, err := os.ReadFile(HEAD_PATH)
+	if err != nil {
+		panic(err)
+	}
+
+	hash := string(headFile)
+	if len(hash) < 40 { //TODO what is sha1 min length?
+		return nil
+	}
+
+	return getObject(hash)
 }
 
 func cmdCreateTree() {
@@ -219,14 +276,20 @@ func appendBowl(bowl []*BowlEntry, newEntry *BowlEntry) []*BowlEntry {
 	return newBowl
 }
 
-func getObject(hash string) string {
+func getObject(hash string) *Object {
 	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
 	var reader, err = os.Open(objectPath)
 	if err != nil {
 		panic(err)
 	}
 
-	return decompress(reader)
+	objectBytes := decompress(reader)
+	header := getHeader(objectBytes)
+	contentBytes := objectBytes[header.Len:]
+	content := string(contentBytes)
+
+	return &Object{Hash: hash, Header: header, Content: content, Bytes: objectBytes}
+
 }
 
 func createObject(objectType string, content string) *Object {
@@ -238,10 +301,12 @@ func createObject(objectType string, content string) *Object {
 	return &Object{ObjectType: objectType, Hash: hash, Bytes: bytes}
 }
 
-func getHeader(object string) *Header {
+func getHeader(object []byte) *Header {
+	objectStr := string(object)
+
 	var headerLen int
 	line := 0
-	for i, c := range object {
+	for i, c := range objectStr {
 		if line == 2 {
 			headerLen = i
 			break
@@ -251,7 +316,7 @@ func getHeader(object string) *Header {
 		}
 	}
 
-	headerLines := strings.Split(object[:headerLen], "\n")
+	headerLines := strings.Split(objectStr[:headerLen], "\n")
 	return &Header{ObjectType: headerLines[0], Len: headerLen}
 }
 
@@ -285,8 +350,8 @@ func createTree(bowlEntries []*BowlEntry) *Object {
 		tree[dir] = createTree(subtree)
 	}
 
-	var sortedKeys []string
-	for key, _ := range tree {
+	sortedKeys := make([]string, 0, len(tree))
+	for key := range tree {
 		sortedKeys = append(sortedKeys, key)
 	}
 	slices.Sort(sortedKeys)
@@ -339,22 +404,21 @@ func compress(b []byte) bytes.Buffer {
 	return buf
 }
 
-func decompress(r io.Reader) string {
-	buf := new(strings.Builder)
-
+func decompress(r io.Reader) []byte {
 	decompressed, err := zlib.NewReader(r)
 	if err != nil {
 		panic(err)
 	}
 
-	io.Copy(buf, decompressed)
+	var buf = new(bytes.Buffer)
+	buf.ReadFrom(decompressed)
 	decompressed.Close()
-	return buf.String()
+	return buf.Bytes()
 }
 
 func exitUsage() {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintln(w, "Usage:\n\nshit init\tInitialize Shit repository\nshit add <filename>\tAdd a file to the the index\nshit flush <filename>\tWrite the current index to a commit\nshit sniff\tShow the current status of the index\tshit get-object\tGet an object from the object store")
+	fmt.Fprintln(w, "Usage:\n\nshit init\tInitialize Shit repository\nshit add <filename>\tAdd a file to the the bowl\nshit flush -m <message>\tWrite the current bowl to a flush\nshit sniff\tShow the current status of the bowl")
 	w.Flush()
 	os.Exit(0)
 }
