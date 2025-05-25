@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 )
@@ -155,32 +156,6 @@ func cmdCreateTree() {
 	fmt.Println(string(tree.Bytes))
 }
 
-func createTree(bowlEntries []*BowlEntry) *Object {
-	tree := make(map[string]*Object)
-	subtrees := make(map[string][]*BowlEntry)
-
-	for _, bowlEntry := range bowlEntries {
-		dir, file := filepath.Split(bowlEntry.Path)
-		if dir == "" {
-			tree[file] = bowlEntry.Object
-		} else {
-			bowlEntry.Path = file
-			subtrees[dir] = append(subtrees[dir], bowlEntry)
-		}
-	}
-
-	for dir, subtree := range subtrees {
-		tree[dir] = createTree(subtree)
-	}
-
-	treeObjectBuf := new(strings.Builder)
-	for name, treeObject := range tree {
-		treeObjectBuf.WriteString(fmt.Sprintf("%s %s %s\n", treeObject.ObjectType, treeObject.Hash, name))
-	}
-
-	return createObject("tree", treeObjectBuf.String())
-}
-
 func getWorkdir() []string {
 	var dir []string
 
@@ -221,6 +196,9 @@ func getBowl() []*BowlEntry {
 }
 
 func writeBowl(bowl []*BowlEntry) {
+	slices.SortFunc(bowl, func(a, b *BowlEntry) int {
+		return strings.Compare(a.Path, b.Path)
+	})
 	var buf bytes.Buffer
 	for _, bowlEntry := range bowl {
 		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlEntry.Object.ObjectType, bowlEntry.Object.Hash, bowlEntry.Path))
@@ -243,24 +221,12 @@ func appendBowl(bowl []*BowlEntry, newEntry *BowlEntry) []*BowlEntry {
 
 func getObject(hash string) string {
 	var objectPath = fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
-
-	var objectReader, err = os.Open(objectPath)
+	var reader, err = os.Open(objectPath)
 	if err != nil {
 		panic(err)
 	}
 
-	buf := new(strings.Builder)
-
-	compressReader, err := zlib.NewReader(objectReader)
-	if err != nil {
-		panic(err)
-	}
-
-	io.Copy(buf, compressReader)
-	objectReader.Close()
-	compressReader.Close()
-
-	return buf.String()
+	return decompress(reader)
 }
 
 func createObject(objectType string, content string) *Object {
@@ -301,6 +267,39 @@ func addHeader(objectType string, content string) []byte {
 	return []byte(parts)
 }
 
+func createTree(bowlEntries []*BowlEntry) *Object {
+	tree := make(map[string]*Object)
+	subtrees := make(map[string][]*BowlEntry)
+
+	for _, bowlEntry := range bowlEntries {
+		dir, file := filepath.Split(bowlEntry.Path)
+		if dir == "" {
+			tree[file] = bowlEntry.Object
+		} else {
+			bowlEntry.Path = file
+			subtrees[dir] = append(subtrees[dir], bowlEntry)
+		}
+	}
+
+	for dir, subtree := range subtrees {
+		tree[dir] = createTree(subtree)
+	}
+
+	var sortedKeys []string
+	for key, _ := range tree {
+		sortedKeys = append(sortedKeys, key)
+	}
+	slices.Sort(sortedKeys)
+
+	treeObjectBuf := new(strings.Builder)
+	for _, key := range sortedKeys {
+		treeObject := tree[key]
+		treeObjectBuf.WriteString(fmt.Sprintf("%s %s %s\n", treeObject.ObjectType, treeObject.Hash, key))
+	}
+
+	return createObject("tree", treeObjectBuf.String())
+}
+
 func readFile(path string) string {
 	var bytes, err = os.ReadFile(path)
 
@@ -338,6 +337,19 @@ func compress(b []byte) bytes.Buffer {
 	w.Write(b)
 	w.Close()
 	return buf
+}
+
+func decompress(r io.Reader) string {
+	buf := new(strings.Builder)
+
+	decompressed, err := zlib.NewReader(r)
+	if err != nil {
+		panic(err)
+	}
+
+	io.Copy(buf, decompressed)
+	decompressed.Close()
+	return buf.String()
 }
 
 func exitUsage() {
