@@ -34,14 +34,34 @@ type Header struct {
 type Object struct {
 	ObjectType string
 	Hash       string
-	Header     *Header
+	Header     *Header //TODO pointers in structs?
 	Content    string
 	Bytes      []byte
 }
 
 type BowlEntry struct {
-	Path   string
+	Change string
 	Object *Object
+	Path   string
+}
+
+type Flush struct {
+	Object     *Object //TODO polymorphism?
+	Date       string
+	ParentHash string
+	TreeHash   string
+	Message    string
+}
+
+type Tree struct {
+	Object *Object
+	Nodes  []TreeNode
+}
+
+type TreeNode struct {
+	Name       string
+	ObjectType string // file or dir
+	Hash       string
 }
 
 func main() {
@@ -90,25 +110,24 @@ func checkInit(action string) {
 		fmt.Println("Directory is not tracked by Shit, initialize dir with \"shit init\" first.")
 		exitUsage()
 	}
-
 }
 
 func cmdInitShit() {
-	if err := os.Mkdir(SHIT_PATH, 0775); err != nil {
-		panic(err)
+	create := func(t string, path string) {
+		var err error
+		if t == "dir" {
+			err = os.Mkdir(path, 0775)
+		} else {
+			_, err = os.Create(path)
+		}
+		if err != nil {
+			panic(err)
+		}
 	}
-
-	if err := os.Mkdir(OBJECTS_PATH, 0775); err != nil {
-		panic(err)
-	}
-
-	if _, err := os.Create(BOWL_PATH); err != nil {
-		panic(err)
-	}
-
-	if _, err := os.Create(HEAD_PATH); err != nil {
-		panic(err)
-	}
+	create("dir", SHIT_PATH)
+	create("dir", OBJECTS_PATH)
+	create("file", BOWL_PATH)
+	create("file", HEAD_PATH)
 }
 
 func cmdAdd(args []string) {
@@ -125,13 +144,42 @@ func cmdAdd(args []string) {
 		paths = append(paths, args[0])
 	}
 
+	head := getHead()
+
 	for _, path := range paths {
-		object := createObject("file", readFile(path))
-		bowlEntry := &BowlEntry{Object: object, Path: path}
+		treeNode := findNodeInFlush(head, path)
+		wdFile := findFileInWorkdir(path)
+		treeNodeExists := treeNode != nil
+		wdFileExists := wdFile != nil
+
+		change := "add"
+		if treeNodeExists && wdFileExists {
+			change = "edit"
+		} else if treeNodeExists && !wdFileExists {
+			change = "delete"
+		}
+
+		var object *Object
+
+		if change == "delete" {
+			object = treeNode
+		} else {
+			object = createObject("file", readFile(path))
+		}
+
+		bowlEntry := &BowlEntry{Object: object, Path: path, Change: change}
 		bowl = appendBowl(bowl, bowlEntry)
 	}
 
 	writeBowl(bowl)
+}
+
+func findFileInWorkdir(path string) os.FileInfo {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
 func cmdGetObject(args []string) {
@@ -163,13 +211,13 @@ func cmdFlush(args []string) {
 	createFlush(tree, parent, message)
 }
 
-func createFlush(tree *Object, parent *Object, message string) {
+func createFlush(tree *Object, parent *Flush, message string) {
 	flushContent := new(strings.Builder)
 
 	flushContent.WriteString("time " + time.Now().UTC().String() + "\n")
 	flushContent.WriteString("parent ")
 	if parent != nil {
-		flushContent.WriteString(parent.Hash)
+		flushContent.WriteString(parent.Object.Hash)
 	}
 	flushContent.WriteString("\n")
 
@@ -193,7 +241,7 @@ func createFlush(tree *Object, parent *Object, message string) {
 	writeFile(BOWL_PATH, *f)
 }
 
-func getHead() *Object {
+func getHead() *Flush {
 	headFile, err := os.ReadFile(HEAD_PATH)
 	if err != nil {
 		panic(err)
@@ -204,7 +252,19 @@ func getHead() *Object {
 		return nil
 	}
 
-	return getObject(hash)
+	return getFlush(hash)
+}
+
+func getFlush(hash string) *Flush {
+	object := getObject(hash)
+
+	lines := strings.Split(object.Content, "\n")
+	date := strings.Split(lines[0], " ")[1]
+	parent := strings.Split(lines[1], " ")[1]
+	tree := strings.Split(lines[2], " ")[1]
+	message := strings.Join(lines[4:], "\n")
+
+	return &Flush{Object: object, Date: date, ParentHash: parent, TreeHash: tree, Message: message}
 }
 
 func cmdCreateTree() {
@@ -245,25 +305,52 @@ func getBowl() []*BowlEntry {
 		}
 
 		lineParts := strings.Split(line, " ")
-		object := &Object{ObjectType: lineParts[0], Hash: lineParts[1]}
-		bowl = append(bowl, &BowlEntry{Object: object, Path: lineParts[2]})
+		change := lineParts[0]
+		hash := lineParts[1]
+		path := lineParts[2]
+		object := getObject(hash)
+		bowl = append(bowl, &BowlEntry{Change: change, Object: object, Path: path})
 	}
 
 	return bowl
 }
-
-func writeBowl(bowl []*BowlEntry) {
-	slices.SortFunc(bowl, func(a, b *BowlEntry) int {
-		return strings.Compare(a.Path, b.Path)
-	})
-	var buf bytes.Buffer
-	for _, bowlEntry := range bowl {
-		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlEntry.Object.ObjectType, bowlEntry.Object.Hash, bowlEntry.Path))
+func findNodeInFlush(flush *Flush, path string) *Object {
+	if flush == nil {
+		return nil
 	}
-	writeFile(BOWL_PATH, buf)
+	tree := getTree(flush.TreeHash)
+	return findNode(tree, path)
+}
+
+func findNode(tree *Tree, path string) *Object {
+	dir, filepath := filepath.Split(path)
+
+	if dir == "" {
+		// Look for a file
+		for _, node := range tree.Nodes {
+			if node.Name == filepath {
+				return getObject(node.Hash)
+			}
+		}
+		return nil
+	}
+
+	// Look for a tree
+	for _, node := range tree.Nodes {
+		if node.Name == dir {
+			nodeObject := getObject(node.Hash)
+			if nodeObject.Header.ObjectType != "tree" {
+				return nil
+			}
+			return findNode(toTree(nodeObject), filepath)
+		}
+	}
+
+	return nil
 }
 
 func appendBowl(bowl []*BowlEntry, newEntry *BowlEntry) []*BowlEntry {
+
 	var newBowl []*BowlEntry
 
 	for _, oldEntry := range bowl {
@@ -274,6 +361,17 @@ func appendBowl(bowl []*BowlEntry, newEntry *BowlEntry) []*BowlEntry {
 
 	newBowl = append(newBowl, newEntry)
 	return newBowl
+}
+
+func writeBowl(bowl []*BowlEntry) {
+	slices.SortFunc(bowl, func(a, b *BowlEntry) int {
+		return strings.Compare(a.Path, b.Path)
+	})
+	var buf bytes.Buffer
+	for _, bowlEntry := range bowl {
+		buf.WriteString(fmt.Sprintf("%s %s %s\n", bowlEntry.Change, bowlEntry.Object.Hash, bowlEntry.Path))
+	}
+	writeFile(BOWL_PATH, buf)
 }
 
 func getObject(hash string) *Object {
@@ -332,14 +430,32 @@ func addHeader(objectType string, content string) []byte {
 	return []byte(parts)
 }
 
+func toTree(object *Object) *Tree {
+	lines := strings.Split(object.Content, "\n")
+	nodes := []TreeNode{}
+	for _, line := range lines {
+		if len(line) > 0 {
+			parts := strings.Split(line, " ")
+			nodes = append(nodes, TreeNode{Name: parts[2], ObjectType: parts[0], Hash: parts[1]})
+		}
+	}
+	return &Tree{Object: object, Nodes: nodes}
+}
+
+func getTree(hash string) *Tree {
+	object := getObject(hash)
+	return toTree(object)
+}
+
+// This has to merge with existing HEAD tree somehow
 func createTree(bowlEntries []*BowlEntry) *Object {
-	tree := make(map[string]*Object)
+	treeNodes := []TreeNode{}
 	subtrees := make(map[string][]*BowlEntry)
 
 	for _, bowlEntry := range bowlEntries {
 		dir, file := filepath.Split(bowlEntry.Path)
 		if dir == "" {
-			tree[file] = bowlEntry.Object
+			treeNodes = append(treeNodes, TreeNode{Name: file, ObjectType: "file", Hash: bowlEntry.Object.Hash})
 		} else {
 			bowlEntry.Path = file
 			subtrees[dir] = append(subtrees[dir], bowlEntry)
@@ -347,19 +463,17 @@ func createTree(bowlEntries []*BowlEntry) *Object {
 	}
 
 	for dir, subtree := range subtrees {
-		tree[dir] = createTree(subtree)
+		subtreeObject := createTree(subtree)
+		treeNodes = append(treeNodes, TreeNode{Name: dir, ObjectType: "file", Hash: subtreeObject.Hash})
 	}
 
-	sortedKeys := make([]string, 0, len(tree))
-	for key := range tree {
-		sortedKeys = append(sortedKeys, key)
-	}
-	slices.Sort(sortedKeys)
+	slices.SortFunc(treeNodes, func(a TreeNode, b TreeNode) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	treeObjectBuf := new(strings.Builder)
-	for _, key := range sortedKeys {
-		treeObject := tree[key]
-		treeObjectBuf.WriteString(fmt.Sprintf("%s %s %s\n", treeObject.ObjectType, treeObject.Hash, key))
+	for _, treeNode := range treeNodes {
+		treeObjectBuf.WriteString(fmt.Sprintf("%s %s %s\n", treeNode.ObjectType, treeNode.Hash, treeNode.Name))
 	}
 
 	return createObject("tree", treeObjectBuf.String())
