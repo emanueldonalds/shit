@@ -70,6 +70,16 @@ func (object Object) ToTree() Tree {
 	return Tree{Object: object, Nodes: nodes}
 }
 
+func (object Object) ToFlush() Flush {
+	lines := strings.Split(object.Content, "\n")
+	tree := strings.Split(lines[0], " ")[1]
+	parent := strings.Split(lines[1], " ")[1]
+	date := strings.Split(lines[2], " ")[1]
+	message := strings.Join(lines[4:], "\n")
+
+	return Flush{Object: object, Date: date, ParentHash: parent, TreeHash: tree, Message: message}
+}
+
 type TreeNode struct {
 	Name     string
 	NodeType string // file or tree
@@ -254,14 +264,7 @@ func getHead() *Flush {
 
 func getFlush(hash string) Flush {
 	object := getObject(hash)
-
-	lines := strings.Split(object.Content, "\n")
-	date := strings.Split(lines[0], " ")[1]
-	parent := strings.Split(lines[1], " ")[1]
-	tree := strings.Split(lines[2], " ")[1]
-	message := strings.Join(lines[4:], "\n")
-
-	return Flush{Object: object, Date: date, ParentHash: parent, TreeHash: tree, Message: message}
+	return object.ToFlush()
 }
 
 func createFlush(tree Tree, parent *Flush, message string) {
@@ -271,11 +274,11 @@ func createFlush(tree Tree, parent *Flush, message string) {
 	}
 
 	content := fmt.Sprintf(`tree %s
-    parent %s
-    time %s
+parent %s
+time %s
 
-    %s
-    `, time.Now().UTC().String(), parentHash, tree.Object.Hash, message)
+%s
+`, tree.Object.Hash, parentHash, time.Now().UTC().String(), message)
 
 	flush := createObject("flush", content)
 
@@ -292,6 +295,7 @@ func findNodeInFlush(flush *Flush, path string) *Object {
 	if flush == nil {
 		return nil
 	}
+	fmt.Println("Hash IS " + flush.TreeHash)
 	tree := getTree(flush.TreeHash)
 	return findNode(tree, path)
 }
@@ -401,6 +405,7 @@ func getObject(hash string) Object {
 
 	objectBytes := decompress(reader)
 	header := getHeader(objectBytes)
+
 	contentBytes := objectBytes[header.Len:]
 	content := string(contentBytes)
 
