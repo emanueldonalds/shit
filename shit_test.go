@@ -65,6 +65,30 @@ be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt`
 
 }
 
+// Test removing a file from worktree, running add -A, expecting the removed file to be removed from the bowl, finally
+func TestRemoveFromBowl(t *testing.T) {
+	initt(t)
+
+	// Add a file
+	fileFixture("file1.txt", "A test") // Hash = c4a5964fd224738514ccd7354a45d37a5ef1a8b3
+	fileFixture("file2.txt", "Hello")  // Hash = be12174911e3aae8c2ed6ef5cb66b32893b3bd21
+
+	run("add", "-A")
+
+	expectedBowl := `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
+be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt`
+	bowl := getFile(".shit/bowl")
+	assert(t, bowl, expectedBowl)
+
+	os.Remove("file2.txt")
+
+	run("add", "-A")
+
+	expectedBowl = `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt`
+	bowl = getFile(".shit/bowl")
+	assert(t, bowl, expectedBowl)
+}
+
 func TestGetBowl(t *testing.T) {
 	initt(t)
 
@@ -213,9 +237,9 @@ func hashFromFlushOutput(output string) string {
 func run(command ...string) string {
 	os.Args = []string{""}
 	os.Args = append(os.Args, command...)
-	w, r, o := recordStdout()
+	w, r, o := startCaptureStdout()
 	main()
-	return captureStdout(w, r, o)
+	return endCaptureStdout(w, r, o)
 }
 
 func assert(t *testing.T, actual string, expected string) {
@@ -284,6 +308,7 @@ func fileFixture(filePath string, content string) string {
 	}
 	files = append(files, filePath)
 	file.Write([]byte(content))
+	file.Close()
 	return hash([]byte(content))
 }
 
@@ -316,7 +341,7 @@ func getDir(path string) string {
 }
 
 // r and w must be closed
-func recordStdout() (r *os.File, w *os.File, o *os.File) {
+func startCaptureStdout() (r *os.File, w *os.File, o *os.File) {
 	o = os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -327,7 +352,7 @@ func recordStdout() (r *os.File, w *os.File, o *os.File) {
 	return r, w, o
 }
 
-func captureStdout(r *os.File, w *os.File, o *os.File) string {
+func endCaptureStdout(r *os.File, w *os.File, o *os.File) string {
 	w.Close()
 	var buf bytes.Buffer
 	io.Copy(&buf, r)

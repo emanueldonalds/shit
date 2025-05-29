@@ -40,7 +40,6 @@ type Object struct {
 }
 
 type BowlEntry struct {
-	Change string
 	Object Object
 	Path   string
 }
@@ -158,39 +157,50 @@ func cmdAdd(args []string) {
 	}
 
 	bowl := getBowl()
-	var paths []string
+	workdir := getWorkdir()
+
+	var addList []string
 
 	if args[0] == "-A" {
-		paths = getWorkdir()
+		addList = workdir
+
+		// Add files from bowl to addlist
+		for _, bowlEntry := range bowl {
+			addList = append(addList, bowlEntry.Path)
+		}
 	} else {
-		paths = append(paths, args[0])
+		addList = append(addList, args...)
 	}
 
-	head := getHead()
+	for _, addFile := range addList {
+        var existingWdFile *string
+        var oldBowlEntry *BowlEntry
 
-	for _, path := range paths {
-		treeNode := findNodeInFlush(head, path)
-		wdFile := findFileInWorkdir(path)
-		treeNodeExists := treeNode != nil
-		wdFileExists := wdFile != nil
+        for _, wdFile := range workdir {
+            if wdFile == addFile {
+                existingWdFile = &wdFile
+            }
+        }
 
-		change := "add" // TODO Instead of storing this in the struct, just apply the change to the bowl...
-		if treeNodeExists && wdFileExists {
-			change = "edit"
-		} else if treeNodeExists && !wdFileExists {
-			change = "delete"
+        for _, bowlEntry := range bowl {
+            if bowlEntry.Path == addFile {
+                oldBowlEntry = &bowlEntry
+            }
+        }
+
+		if existingWdFile != nil {
+			object := createObject("file", readFile(*existingWdFile))
+			bowlEntry := BowlEntry{Object: object, Path: *existingWdFile}
+			bowl = addToBowl(bowl, bowlEntry)
 		}
+        
+        if existingWdFile == nil && oldBowlEntry != nil {
+            bowl = removeFromBowl(bowl, addFile)
+        }
 
-		var object Object
-
-		if change == "delete" {
-			continue
-		} else {
-			object = createObject("file", readFile(path))
-		}
-
-		bowlEntry := BowlEntry{Object: object, Path: path, Change: change}
-		bowl = mergeBowl(bowl, bowlEntry)
+        if existingWdFile == nil && oldBowlEntry == nil {
+            panic(fmt.Sprintf("File with path %s not found in neither workdir or bowl", addFile))
+        }
 	}
 
 	writeBowl(bowl)
@@ -288,16 +298,7 @@ time %s
 		panic(err)
 	}
 
-	fmt.Println("Created flush " + flush.Hash + "\n======================================================")
-}
-
-func findNodeInFlush(flush *Flush, path string) *Object {
-	if flush == nil {
-		return nil
-	}
-	fmt.Println("Hash IS " + flush.TreeHash)
-	tree := getTree(flush.TreeHash)
-	return findNode(tree, path)
+	fmt.Println("Created flush " + flush.Hash)
 }
 
 func findNode(tree Tree, path string) *Object {
@@ -358,8 +359,7 @@ func getBowl() []BowlEntry {
 	return bowl
 }
 
-func mergeBowl(bowl []BowlEntry, newEntry BowlEntry) []BowlEntry {
-
+func addToBowl(bowl []BowlEntry, newEntry BowlEntry) []BowlEntry {
 	var newBowl []BowlEntry
 
 	for _, oldEntry := range bowl {
@@ -376,6 +376,16 @@ func mergeBowl(bowl []BowlEntry, newEntry BowlEntry) []BowlEntry {
 	return newBowl
 }
 
+func removeFromBowl(bowl []BowlEntry, path string) []BowlEntry {
+	var newBowl []BowlEntry
+	for _, entry := range bowl {
+		if entry.Path != path {
+			newBowl = append(newBowl, entry)
+		}
+	}
+	return newBowl
+}
+
 func writeBowl(bowl []BowlEntry) {
 	slices.SortFunc(bowl, func(a, b BowlEntry) int {
 		return strings.Compare(a.Path, b.Path)
@@ -388,14 +398,6 @@ func writeBowl(bowl []BowlEntry) {
 	var buf bytes.Buffer
 	buf.Write([]byte(content))
 	writeFile(BOWL_PATH, buf)
-}
-
-func findFileInWorkdir(path string) os.FileInfo {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil
-	}
-	return info
 }
 
 func getObject(hash string) Object {
