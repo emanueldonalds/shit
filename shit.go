@@ -301,27 +301,29 @@ func findNodeInFlush(flush *Flush, path string) *Object {
 }
 
 func findNode(tree Tree, path string) *Object {
-	dir, filepath := filepath.Split(path)
+	parts := strings.Split(path, string(filepath.Separator))
 
-	if dir == "" {
-		// Look for a file
+	if len(parts) > 1 {
+		// Look for a tree
+		dir := parts[0]
 		for _, node := range tree.Nodes {
-			if node.Name == filepath {
+			if node.Name == dir {
+				nodeObject := getObject(node.Hash)
+				if nodeObject.Header.ObjectType != "tree" {
+					return nil
+				}
+				childPath := strings.Join(parts[1:], string(filepath.Separator))
+				return findNode(nodeObject.ToTree(), childPath)
+			}
+		}
+	} else {
+		// Look for a file
+		fileName := parts[0]
+		for _, node := range tree.Nodes {
+			if node.Name == fileName {
 				nodeObject := getObject(node.Hash)
 				return &nodeObject
 			}
-		}
-		return nil
-	}
-
-	// Look for a tree
-	for _, node := range tree.Nodes {
-		if node.Name == dir {
-			nodeObject := getObject(node.Hash)
-			if nodeObject.Header.ObjectType != "tree" {
-				return nil
-			}
-			return findNode(nodeObject.ToTree(), filepath)
 		}
 	}
 

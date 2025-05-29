@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,26 @@ func TestAdd(t *testing.T) {
 
 	assertFile(t, ".shit/bowl", "caa2b67db4872c7027aff70c5f7676ee3417ad50 other.txt\n197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt")
 	assertDir(t, ".shit/objects", "197fa33f64bfce7ac12607ad567ea8573a38a823\naff9a3a04647a47feed6d1c64e023397daff1191\ncaa2b67db4872c7027aff70c5f7676ee3417ad50")
+}
+
+func TestAddAll(t *testing.T) {
+	initt(t)
+
+	// Add a file
+	fileFixture("file1.txt", "A test")       // Hash = c4a5964fd224738514ccd7354a45d37a5ef1a8b3
+	fileFixture("file2.txt", "Hello")        // Hash = be12174911e3aae8c2ed6ef5cb66b32893b3bd21
+	fileFixture("a/b/c/file3.txt", "A test") // Hash = c4a5964fd224738514ccd7354a45d37a5ef1a8b3
+	fileFixture("a/b/c/file4.txt", "Hello")  // Hash = be12174911e3aae8c2ed6ef5cb66b32893b3bd21
+
+	run("add", "-A")
+
+	expectedBowl := `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 a/b/c/file3.txt
+be12174911e3aae8c2ed6ef5cb66b32893b3bd21 a/b/c/file4.txt
+c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
+be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt`
+	bowl := getFile(".shit/bowl")
+	assert(t, bowl, expectedBowl)
+
 }
 
 func TestGetBowl(t *testing.T) {
@@ -137,51 +158,51 @@ be12174911e3aae8c2ed6ef5cb66b32893b3bd21 dir1/file4.txt
 func TestAddAndFlushMultipleTimes(t *testing.T) {
 	initt(t)
 
-    // Create commit with one file
+	// Create commit with one file
 	fileFixture("file1.txt", "File 1")
 	run("add", "file1.txt")
 	output := run("flush", "-m", "A flush")
 	cmt1Hash := hashFromFlushOutput(output)
 
-    // Add another file and commit
+	// Add another file and commit
 	fileFixture("file2.txt", "File 2")
 	run("add", "file2.txt")
 	output = run("flush", "-m", "Another flush")
 	cmt2Hash := hashFromFlushOutput(output)
 
-    // Change one file and commit
+	// Change one file and commit
 	fileFixture("file2.txt", "File 2 changed")
 	run("add", "file2.txt")
 	output = run("flush", "-m", "A third flush")
 	cmt3Hash := hashFromFlushOutput(output)
 
-	o1 := getObject(cmt1Hash).ToFlush()
-	o2 := getObject(cmt2Hash).ToFlush()
-	o3 := getObject(cmt3Hash).ToFlush()
+	flush1 := getObject(cmt1Hash).ToFlush()
+	flush2 := getObject(cmt2Hash).ToFlush()
+	flush3 := getObject(cmt3Hash).ToFlush()
 
-	assert(t, o1.ParentHash, "")
-	assert(t, o2.ParentHash, cmt1Hash)
-	assert(t, o3.ParentHash, cmt2Hash)
+	assert(t, flush1.ParentHash, "")
+	assert(t, flush2.ParentHash, cmt1Hash)
+	assert(t, flush3.ParentHash, cmt2Hash)
 
-    tree1 := getTree(o1.TreeHash)
-    tree2 := getTree(o2.TreeHash)
-    tree3 := getTree(o3.TreeHash)
+	tree1 := getTree(flush1.TreeHash)
+	tree2 := getTree(flush2.TreeHash)
+	tree3 := getTree(flush3.TreeHash)
 
-    assertInt(t, len(tree1.Nodes), 1)
-    assert(t, tree1.Nodes[0].Name, "file1.txt")
+	assertInt(t, len(tree1.Nodes), 1)
+	assert(t, tree1.Nodes[0].Name, "file1.txt")
 
-    assertInt(t, len(tree2.Nodes), 2)
-    assert(t, tree2.Nodes[0].Name, "file1.txt")
-    assert(t, tree2.Nodes[1].Name, "file2.txt")
+	assertInt(t, len(tree2.Nodes), 2)
+	assert(t, tree2.Nodes[0].Name, "file1.txt")
+	assert(t, tree2.Nodes[1].Name, "file2.txt")
 
-    assertInt(t, len(tree2.Nodes), 2)
-    assert(t, tree3.Nodes[0].Name, "file1.txt")
-    assert(t, tree3.Nodes[1].Name, "file2.txt")
+	assertInt(t, len(tree2.Nodes), 2)
+	assert(t, tree3.Nodes[0].Name, "file1.txt")
+	assert(t, tree3.Nodes[1].Name, "file2.txt")
 
-    // File 2 should be different in commit 2 and 3
-    if (tree2.Nodes[1].Hash == tree3.Nodes[1].Hash) {
-        t.Error("fuck")
-    }
+	// File 2 should be different in commit 2 and 3
+	if tree2.Nodes[1].Hash == tree3.Nodes[1].Hash {
+		t.Error("fuck")
+	}
 }
 
 func hashFromFlushOutput(output string) string {
@@ -230,9 +251,9 @@ func assertLine(t *testing.T, actual string, line_num int, expected string) {
 }
 
 func assertInt(t *testing.T, actual int, expected int) {
-    if actual != expected {
-        t.Errorf("Expected %d but was %d", expected, actual)
-    }
+	if actual != expected {
+		t.Errorf("Expected %d but was %d", expected, actual)
+	}
 }
 
 func initt(t *testing.T) {
@@ -251,12 +272,17 @@ func initt(t *testing.T) {
 	main()
 }
 
-func fileFixture(name string, content string) string {
-	file, err := os.Create(name)
+func fileFixture(filePath string, content string) string {
+	dir, _ := filepath.Split(filePath)
+	if dir != "" {
+		os.MkdirAll(dir, 0755)
+	}
+
+	file, err := os.Create(filePath)
 	if err != nil {
 		panic(err)
 	}
-	files = append(files, name)
+	files = append(files, filePath)
 	file.Write([]byte(content))
 	return hash([]byte(content))
 }
