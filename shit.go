@@ -39,6 +39,49 @@ type Object struct {
 	Bytes   []byte
 }
 
+func (object Object) ToFlush() Flush {
+	lines := strings.Split(object.Content, "\n")
+	tree := strings.Split(lines[0], " ")[1]
+	parent := strings.Split(lines[1], " ")[1]
+	date := strings.Split(lines[2], " ")[1]
+	message := strings.Join(lines[4:], "\n")
+
+	return Flush{Object: object, Date: date, ParentHash: parent, TreeHash: tree, Message: message}
+}
+
+func (object Object) ToTree() Tree {
+	lines := strings.Split(object.Content, "\n")
+	nodes := []TreeNode{}
+	for _, line := range lines {
+		if len(line) > 0 {
+			parts := strings.Split(line, " ")
+			nodes = append(nodes, TreeNode{Name: parts[2], NodeType: parts[0], Hash: parts[1]})
+		}
+	}
+	return Tree{Object: object, Nodes: nodes}
+}
+
+func (tree Tree) ToBowl() []BowlEntry {
+	var createEntries func(root string, tree Tree) []BowlEntry
+	createEntries = func(root string, tree Tree) []BowlEntry {
+		entries := []BowlEntry{}
+		for _, node := range tree.Nodes {
+			if node.NodeType == "file" {
+				object := getObject(node.Hash)
+				path := filepath.Join(root, node.Name)
+				entries = append(entries, BowlEntry{object, path})
+			}
+			if node.NodeType == "tree" {
+				tree := getObject(node.Hash).ToTree()
+				treePath := filepath.Join(root, node.Name)
+				entries = append(entries, createEntries(treePath, tree)...)
+			}
+		}
+		return entries
+	}
+	return createEntries("./", tree)
+}
+
 type BowlEntry struct {
 	Object Object
 	Path   string
@@ -57,26 +100,18 @@ type Tree struct {
 	Nodes  []TreeNode
 }
 
-func (object Object) ToTree() Tree {
-	lines := strings.Split(object.Content, "\n")
-	nodes := []TreeNode{}
-	for _, line := range lines {
-		if len(line) > 0 {
-			parts := strings.Split(line, " ")
-			nodes = append(nodes, TreeNode{Name: parts[2], NodeType: parts[0], Hash: parts[1]})
+func (tree Tree) ToBowlEntries(root string) []BowlEntry {
+	bowl := []BowlEntry{}
+	for _, node := range tree.Nodes {
+		if node.NodeType == "file" {
+			object := getObject(node.Hash)
+			bowl = addToBowl(bowl, BowlEntry{Object: object, Path: root})
+		} else if node.NodeType == "tree" {
+			subtree := getTree(node.Hash)
+			bowl = addToBowl(bowl, subtree.ToBowlEntries(node.Name)...)
 		}
 	}
-	return Tree{Object: object, Nodes: nodes}
-}
-
-func (object Object) ToFlush() Flush {
-	lines := strings.Split(object.Content, "\n")
-	tree := strings.Split(lines[0], " ")[1]
-	parent := strings.Split(lines[1], " ")[1]
-	date := strings.Split(lines[2], " ")[1]
-	message := strings.Join(lines[4:], "\n")
-
-	return Flush{Object: object, Date: date, ParentHash: parent, TreeHash: tree, Message: message}
+	return bowl
 }
 
 type TreeNode struct {
@@ -101,10 +136,16 @@ func main() {
 		cmdAdd(command.Args)
 	case "get-object":
 		cmdGetObject(command.Args)
+	case "sniff":
+		cmdSniff()
+	case "log":
+		cmdLog()
 	case "flush":
 		cmdFlush(command.Args)
 	case "create-tree":
 		cmdCreateTree()
+	case "plunge":
+		cmdPlunge(command.Args)
 	default:
 		exitUsage()
 	}
@@ -158,13 +199,13 @@ func cmdAdd(args []string) {
 
 	bowl := getBowl()
 	workdir := getWorkdir()
-
 	var addList []string
 
 	if args[0] == "-A" {
+		// Add workdir files to addlist
 		addList = workdir
 
-		// Add files from bowl to addlist
+		// As well as all files from bowl
 		for _, bowlEntry := range bowl {
 			addList = append(addList, bowlEntry.Path)
 		}
@@ -173,34 +214,30 @@ func cmdAdd(args []string) {
 	}
 
 	for _, addFile := range addList {
-        var existingWdFile *string
-        var oldBowlEntry *BowlEntry
+		var existingWdFile *string
+		var oldBowlEntry *BowlEntry
 
-        for _, wdFile := range workdir {
-            if wdFile == addFile {
-                existingWdFile = &wdFile
-            }
-        }
-
-        for _, bowlEntry := range bowl {
-            if bowlEntry.Path == addFile {
-                oldBowlEntry = &bowlEntry
-            }
-        }
-
+		for _, wdFile := range workdir {
+			if wdFile == addFile {
+				existingWdFile = &wdFile
+			}
+		}
+		for _, bowlEntry := range bowl {
+			if bowlEntry.Path == addFile {
+				oldBowlEntry = &bowlEntry
+			}
+		}
 		if existingWdFile != nil {
 			object := createObject("file", readFile(*existingWdFile))
 			bowlEntry := BowlEntry{Object: object, Path: *existingWdFile}
 			bowl = addToBowl(bowl, bowlEntry)
 		}
-        
-        if existingWdFile == nil && oldBowlEntry != nil {
-            bowl = removeFromBowl(bowl, addFile)
-        }
-
-        if existingWdFile == nil && oldBowlEntry == nil {
-            panic(fmt.Sprintf("File with path %s not found in neither workdir or bowl", addFile))
-        }
+		if existingWdFile == nil && oldBowlEntry != nil {
+			bowl = removeFromBowl(bowl, addFile)
+		}
+		if existingWdFile == nil && oldBowlEntry == nil {
+			panic(fmt.Sprintf("File with path %s not found in neither workdir or bowl", addFile))
+		}
 	}
 
 	writeBowl(bowl)
@@ -216,13 +253,34 @@ func cmdGetObject(args []string) {
 	fmt.Print(string(object.Bytes))
 }
 
+// TODO show added/modified/deleted instead of just printing the bowl
+func cmdSniff() {
+	bowl := getBowl()
+	for _, entry := range bowl {
+		fmt.Printf("%s %s\n", entry.Object.Hash, entry.Path)
+	}
+}
+
+func cmdLog() {
+	head := getHead()
+	printLog(*head)
+}
+
+func printLog(flush Flush) {
+	fmt.Println("Flush " + flush.Object.Hash)
+	fmt.Println(flush.Object.Content)
+	if flush.ParentHash == "" {
+		return
+	}
+	printLog(getFlush(flush.ParentHash))
+}
+
 func cmdFlush(args []string) {
 	if len(args) < 2 || args[0] != "-m" {
 		fmt.Println("A message is required when flusing (-m <message>).")
 		exitUsage()
 	}
 
-	message := args[1]
 	bowl := getBowl()
 	if len(bowl) == 0 {
 		fmt.Println("Your bowl is empty, add files to bowl with \"flush add <filename>\" first.")
@@ -231,13 +289,61 @@ func cmdFlush(args []string) {
 
 	tree := createTree(bowl)
 	parent := getHead()
-	createFlush(tree, parent, message)
+	createFlush(tree, parent, args[1])
 }
 
 func cmdCreateTree() {
 	bowl := getBowl()
 	tree := createTree(bowl)
 	fmt.Println("Created tree " + tree.Object.Hash)
+}
+
+func cmdPlunge(args []string) {
+	if len(args) > 1 {
+		exitUsage()
+	}
+
+	currentBowl := getBowl()
+	head := getFlush(args[0])
+	fmt.Println("Head is " + head.Object.Hash)
+	tree := getTree(head.TreeHash)
+	newBowl := tree.ToBowl()
+
+	deleteWdFiles(currentBowl)
+	writeTreeToWd("./", tree)
+	writeBowl(newBowl)
+
+	fmt.Println("Plunged out " + head.Object.Hash)
+}
+
+func writeTreeToWd(root string, tree Tree) {
+	for _, node := range tree.Nodes {
+		if node.NodeType == "file" {
+			object := getObject(node.Hash)
+			filename := filepath.Join(root, node.Name)
+			os.WriteFile(filename, object.Bytes, 0644)
+		}
+		if node.NodeType == "tree" {
+			subtree := getObject(node.Hash).ToTree()
+			dirname := filepath.Join(root, node.Name)
+			os.Mkdir(dirname, 0644)
+			writeTreeToWd(dirname, subtree)
+		}
+	}
+}
+
+func deleteWdFiles(bowl []BowlEntry) {
+	for _, bowlEntry := range bowl {
+		pathParts := strings.Split(bowlEntry.Path, string(filepath.Separator))
+		for i := len(pathParts); i > 0; i-- {
+			nodePath := strings.Join(pathParts[:i], string(filepath.Separator))
+			_, err := os.Stat(nodePath)
+			if err != nil {
+				continue
+			}
+			os.Remove(nodePath)
+		}
+	}
 }
 
 func getWorkdir() []string {
@@ -262,12 +368,10 @@ func getHead() *Flush {
 	if err != nil {
 		panic(err)
 	}
-
 	hash := string(headFile)
 	if len(hash) < 40 { // sha1 is 40 chars
 		return nil
 	}
-
 	head := getFlush(hash)
 	return &head
 }
@@ -289,7 +393,6 @@ time %s
 
 %s
 `, tree.Object.Hash, parentHash, time.Now().UTC().String(), message)
-
 	flush := createObject("flush", content)
 
 	// Update head
@@ -334,7 +437,6 @@ func findNode(tree Tree, path string) *Object {
 func getBowl() []BowlEntry {
 	bowlFile := readFile(BOWL_PATH)
 	bowlLines := strings.Split(bowlFile, "\n")
-
 	var bowl []BowlEntry
 
 	if bowlLines[0] == "" {
@@ -355,20 +457,21 @@ func getBowl() []BowlEntry {
 		object := getObject(hash)
 		bowl = append(bowl, BowlEntry{Object: object, Path: path})
 	}
-
 	return bowl
 }
 
-func addToBowl(bowl []BowlEntry, newEntry BowlEntry) []BowlEntry {
+func addToBowl(bowl []BowlEntry, newEntries ...BowlEntry) []BowlEntry {
 	var newBowl []BowlEntry
 
 	for _, oldEntry := range bowl {
-		if oldEntry.Path != newEntry.Path {
-			newBowl = append(newBowl, oldEntry)
+		for _, newEntry := range newEntries {
+			if oldEntry.Path != newEntry.Path {
+				newBowl = append(newBowl, oldEntry)
+			}
 		}
 	}
 
-	newBowl = append(newBowl, newEntry)
+	newBowl = append(newBowl, newEntries...)
 	slices.SortFunc(newBowl, func(a BowlEntry, b BowlEntry) int {
 		return strings.Compare(a.Path, b.Path)
 	})
@@ -390,10 +493,12 @@ func writeBowl(bowl []BowlEntry) {
 	slices.SortFunc(bowl, func(a, b BowlEntry) int {
 		return strings.Compare(a.Path, b.Path)
 	})
+
 	var bowlLines []string
 	for _, bowlEntry := range bowl {
 		bowlLines = append(bowlLines, fmt.Sprintf("%s %s", bowlEntry.Object.Hash, bowlEntry.Path))
 	}
+
 	content := strings.Join(bowlLines, "\n")
 	var buf bytes.Buffer
 	buf.Write([]byte(content))
@@ -406,13 +511,10 @@ func getObject(hash string) Object {
 	if err != nil {
 		panic(err)
 	}
-
 	objectBytes := decompress(reader)
 	header := getHeader(objectBytes)
-
 	contentBytes := objectBytes[header.Len:]
 	content := string(contentBytes)
-
 	return Object{Hash: hash, Header: header, Content: content, Bytes: objectBytes}
 
 }
@@ -421,16 +523,15 @@ func createObject(objectType string, content string) Object {
 	header, bytes := addHeader(objectType, content)
 	hash := hash(bytes)
 	objectPath := fmt.Sprintf(OBJECTS_PATH+"/%s", hash)
-
 	writeFile(objectPath, compress(bytes))
 	return Object{Hash: hash, Header: header, Bytes: bytes}
 }
 
 func getHeader(object []byte) Header {
 	objectStr := string(object)
-
 	var headerLen int
 	line := 0
+
 	for i, c := range objectStr {
 		if line == 2 {
 			headerLen = i
@@ -447,15 +548,8 @@ func getHeader(object []byte) Header {
 
 // Returns the header, and a byte array containing the full object content including the header
 func addHeader(objectType string, objectContent string) (Header, []byte) {
-	// Object format:
-
-	// type
-	// <empty-line>
-	// content
-
 	headerContent := objectType + "\n\n"
 	header := Header{ObjectType: objectType, Len: len(headerContent), Content: headerContent}
-
 	return header, []byte(headerContent + objectContent)
 }
 
@@ -467,7 +561,7 @@ func getTree(hash string) Tree {
 // Generate trees from bowl entries
 func createTree(bowlEntries []BowlEntry) Tree {
 	nodes := []TreeNode{}
-	bowlSubentryMap := make(map[string][]BowlEntry)
+	bowlSubentryMap := make(map[string][]BowlEntry) // dirname -> subentries
 
 	for _, bowlEntry := range bowlEntries {
 		dir, file := filepath.Split(bowlEntry.Path)
@@ -479,7 +573,7 @@ func createTree(bowlEntries []BowlEntry) Tree {
 		}
 	}
 
-	// Create tree objects from subentries recursively
+	// Create tree objects from subentries
 	for dir, bowlDirEntries := range bowlSubentryMap {
 		subtree := createTree(bowlDirEntries)
 		subtreeNode := TreeNode{Name: dir, NodeType: "tree", Hash: subtree.Object.Hash}
@@ -494,14 +588,12 @@ func createTree(bowlEntries []BowlEntry) Tree {
 	for _, treeNode := range nodes {
 		treeEntries = append(treeEntries, fmt.Sprintf("%s %s %s", treeNode.NodeType, treeNode.Hash, treeNode.Name))
 	}
-
 	var object = createObject("tree", strings.Join(treeEntries, "\n"))
 	return object.ToTree()
 }
 
 func readFile(path string) string {
 	var bytes, err = os.ReadFile(path)
-
 	if err != nil {
 		panic(err)
 	}
@@ -510,15 +602,11 @@ func readFile(path string) string {
 
 func writeFile(path string, buf bytes.Buffer) {
 	file, err := os.Create(path)
-
 	if err != nil {
 		panic(err)
 	}
-
 	defer file.Close()
-
 	_, err = io.Copy(file, &buf)
-
 	if err != nil {
 		panic(err)
 	}
@@ -543,7 +631,6 @@ func decompress(r io.Reader) []byte {
 	if err != nil {
 		panic(err)
 	}
-
 	var buf = new(bytes.Buffer)
 	buf.ReadFrom(decompressed)
 	decompressed.Close()
@@ -552,7 +639,13 @@ func decompress(r io.Reader) []byte {
 
 func exitUsage() {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintln(w, "Usage:\n\nshit init\tInitialize Shit repository\nshit add <filename>\tAdd a file to the the bowl\nshit flush -m <message>\tWrite the current bowl to a flush\nshit sniff\tShow the current status of the bowl")
+	fmt.Fprint(w, "Usage:\n\n"+
+		"shit init\tInitialize Shit repository\n"+
+		"shit add <filename>\tAdd a file to the the bowl\n"+
+		"shit sniff\tShow the current status of the bowl\n"+
+		"shit log\tShow the flush logs\n"+
+		"shit flush -m <message>\tWrite the current bowl to a flush\n"+
+		"shit plunge <hash>\tPlunge out a specific flush\n")
 	w.Flush()
 	os.Exit(0)
 }
