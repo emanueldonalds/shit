@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -14,9 +15,8 @@ var files = []string{}
 
 func TestInit(t *testing.T) {
 	initt(t)
-	assertFile(t, ".shit/HEAD", "")
-	assertFile(t, ".shit/bowl", "")
-	assertDir(t, ".shit/objects", "")
+	output := run("sniff")
+	assert(t, output, "")
 }
 
 func TestAdd(t *testing.T) {
@@ -26,23 +26,22 @@ func TestAdd(t *testing.T) {
 	fileFixture("test.txt", "A test file\nWith two lines\n")
 	run("add", "test.txt")
 
-	assertFile(t, ".shit/bowl", "197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt")
-	assertDir(t, ".shit/objects", "197fa33f64bfce7ac12607ad567ea8573a38a823")
-	assertObject(t, "197fa33f64bfce7ac12607ad567ea8573a38a823", "file\n\nA test file\nWith two lines\n")
+	output := run("sniff")
+	assert(t, output, "197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt\n")
 
 	// Add another file
 	fileFixture("other.txt", "Another file")
 	run("add", "other.txt")
 
-	assertFile(t, ".shit/bowl", "aff9a3a04647a47feed6d1c64e023397daff1191 other.txt\n197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt")
-	assertDir(t, ".shit/objects", "197fa33f64bfce7ac12607ad567ea8573a38a823\naff9a3a04647a47feed6d1c64e023397daff1191")
+	output = run("sniff")
+	assert(t, output, "aff9a3a04647a47feed6d1c64e023397daff1191 other.txt\n197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt\n")
 
 	// Update an existing file
 	fileFixture("other.txt", "yet another file")
 	run("add", "other.txt")
 
-	assertFile(t, ".shit/bowl", "caa2b67db4872c7027aff70c5f7676ee3417ad50 other.txt\n197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt")
-	assertDir(t, ".shit/objects", "197fa33f64bfce7ac12607ad567ea8573a38a823\naff9a3a04647a47feed6d1c64e023397daff1191\ncaa2b67db4872c7027aff70c5f7676ee3417ad50")
+	output = run("sniff")
+	assert(t, output, "caa2b67db4872c7027aff70c5f7676ee3417ad50 other.txt\n197fa33f64bfce7ac12607ad567ea8573a38a823 test.txt\n")
 }
 
 func TestAddAll(t *testing.T) {
@@ -59,9 +58,10 @@ func TestAddAll(t *testing.T) {
 	expectedBowl := `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 a/b/c/file3.txt
 be12174911e3aae8c2ed6ef5cb66b32893b3bd21 a/b/c/file4.txt
 c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
-be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt`
-	bowl := getFile(".shit/bowl")
-	assert(t, bowl, expectedBowl)
+be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt
+`
+	output := run("sniff")
+	assert(t, output, expectedBowl)
 
 }
 
@@ -76,28 +76,19 @@ func TestRemoveFromBowl(t *testing.T) {
 	run("add", "-A")
 
 	expectedBowl := `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
-be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt`
-	bowl := getFile(".shit/bowl")
-	assert(t, bowl, expectedBowl)
+be12174911e3aae8c2ed6ef5cb66b32893b3bd21 file2.txt
+`
+	output := run("sniff")
+	assert(t, output, expectedBowl)
 
 	os.Remove("file2.txt")
 
 	run("add", "-A")
 
-	expectedBowl = `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt`
-	bowl = getFile(".shit/bowl")
-	assert(t, bowl, expectedBowl)
-}
-
-func TestGetBowl(t *testing.T) {
-	initt(t)
-
-	objectFixture("file\n\nA test") // Hash = c4a5964fd224738514ccd7354a45d37a5ef1a8b3
-	fileFixture(".shit/bowl", `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
-`)
-
-	bowl := getBowl()
-	assert(t, bowl[0].Object.Hash, "c4a5964fd224738514ccd7354a45d37a5ef1a8b3")
+	expectedBowl = `c4a5964fd224738514ccd7354a45d37a5ef1a8b3 file1.txt
+`
+	output = run("sniff")
+	assert(t, output, expectedBowl)
 }
 
 func TestCreateObject(t *testing.T) {
@@ -165,12 +156,11 @@ be12174911e3aae8c2ed6ef5cb66b32893b3bd21 dir1/file4.txt
 
 	output := run("flush", "-m", "A flush")
 	cmtHash := strings.Split(strings.Split(output, "\n")[0], " ")[2]
-	assert(t, getFile(".shit/bowl"), bowl)
 
-	head := getFile(".shit/HEAD")
-	assert(t, head, cmtHash)
+	output = run("sniff")
+	assert(t, output, bowl)
 
-	flush := getObject(head)
+	flush := getObject(cmtHash)
 	content := string(flush.Bytes)
 	assertLine(t, content, 0, "flush")
 	assertLine(t, content, 1, "")
@@ -223,7 +213,7 @@ func TestAddAndFlushMultipleTimes(t *testing.T) {
 	assert(t, tree3.Nodes[0].Name, "file1.txt")
 	assert(t, tree3.Nodes[1].Name, "file2.txt")
 
-	// File 2 should be different in commit 2 and 3
+	// File 2 should be different in commits 2 and 3
 	if tree2.Nodes[1].Hash == tree3.Nodes[1].Hash {
 		t.Error("fuck")
 	}
@@ -239,12 +229,17 @@ func run(command ...string) string {
 	os.Args = append(os.Args, command...)
 	w, r, o := startCaptureStdout()
 	main()
-	return endCaptureStdout(w, r, o)
+	output := endCaptureStdout(w, r, o)
+	fmt.Print(output)
+	return output
 }
 
 func assert(t *testing.T, actual string, expected string) {
 	if actual != expected {
-		t.Errorf("File did not match expectation.\n\nExpected:\n----------------------------------------\n%s\n----------------------------------------\n\nActual:\n----------------------------------------\n%s\n----------------------------------------\n\n", expected, actual)
+		t.Errorf("File did not match expectation.\n\nExpected:\n----------------------------------------\n%s\n----------------------------------------\n\nActual:\n----------------------------------------\n%s\n----------------------------------------\n\nStack trace:\n%s",
+			expected,
+			actual,
+			debug.Stack())
 	}
 }
 
