@@ -20,6 +20,7 @@ const SHIT_PATH = ".shit"
 const HEAD_PATH = SHIT_PATH + "/HEAD"
 const BOWL_PATH = SHIT_PATH + "/bowl"
 const OBJECTS_PATH = SHIT_PATH + "/objects"
+const REFS_PATH = SHIT_PATH + "/refs"
 
 type Command struct {
 	Action string
@@ -159,21 +160,6 @@ func parseArgs() Command {
 	return Command{Action: os.Args[1], Args: os.Args[2:]}
 }
 
-func checkInit(action string) {
-	_, err := os.Stat(SHIT_PATH)
-	dirIsTracked := err == nil
-
-	if !dirIsTracked && action == "init" {
-		return
-	} else if dirIsTracked && action == "init" {
-		fmt.Println("Directory is already tracked by Shit, aborting init.")
-		exitUsage()
-	} else if !dirIsTracked {
-		fmt.Println("Directory is not tracked by Shit, initialize dir with \"shit init\" first.")
-		exitUsage()
-	}
-}
-
 func cmdInitShit() {
 	createFs := func(t string, path string) {
 		var err error
@@ -189,7 +175,10 @@ func cmdInitShit() {
 	createFs("dir", SHIT_PATH)
 	createFs("dir", OBJECTS_PATH)
 	createFs("file", BOWL_PATH)
-	createFs("file", HEAD_PATH)
+	createFs("dir", REFS_PATH)
+	createFs("file", filepath.Join(REFS_PATH, "master"))
+
+    writeFile(HEAD_PATH, bytes.NewBuffer([]byte("refs/master")))
 }
 
 func cmdAdd(args []string) {
@@ -316,6 +305,24 @@ func cmdPlunge(args []string) {
 	fmt.Println("Plunged out " + head.Object.Hash)
 }
 
+func dirIsTracked() bool {
+	_, err := os.Stat(SHIT_PATH)
+	return err == nil
+}
+
+func checkInit(action string) {
+    dirIsTracked := dirIsTracked()
+	if !dirIsTracked && action == "init" {
+		return
+	} else if dirIsTracked && action == "init" {
+		fmt.Println("Directory is already tracked by Shit, aborting init.")
+		exitUsage()
+	} else if !dirIsTracked {
+		fmt.Println("Directory is not tracked by Shit, initialize dir with \"shit init\" first.")
+		exitUsage()
+	}
+}
+
 func writeTreeToWd(root string, tree Tree) {
 	for _, node := range tree.Nodes {
 		if node.NodeType == "file" {
@@ -368,12 +375,27 @@ func getHead() *Flush {
 	if err != nil {
 		panic(err)
 	}
-	hash := string(headFile)
-	if len(hash) < 40 { // sha1 is 40 chars
+	headRef := string(headFile)
+    head := getRef(headRef)
+    if head == nil { // If no commit has yet been made, head is nil.
 		return nil
 	}
-	head := getFlush(hash)
-	return &head
+	return head
+}
+
+func getRef(name string) *Flush {
+    refPath := filepath.Join(REFS_PATH, name)
+    _, err := os.Stat(refPath)
+    if err != nil {
+        // Ref doesn't exist, which is the inital case for master ref if no commit is yet created.
+        return nil
+    }
+    ref, err := os.ReadFile(refPath)
+    if err != nil {
+        panic(err)
+    }
+    flush := getFlush(string(ref))
+    return &flush
 }
 
 func getFlush(hash string) Flush {
@@ -500,8 +522,7 @@ func writeBowl(bowl []BowlEntry) {
 	}
 
 	content := strings.Join(bowlLines, "\n")
-	var buf bytes.Buffer
-	buf.Write([]byte(content))
+    buf := bytes.NewBuffer([]byte(content))
 	writeFile(BOWL_PATH, buf)
 }
 
@@ -600,13 +621,13 @@ func readFile(path string) string {
 	return string(bytes)
 }
 
-func writeFile(path string, buf bytes.Buffer) {
+func writeFile(path string, buf *bytes.Buffer) {
 	file, err := os.Create(path)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	_, err = io.Copy(file, &buf)
+	_, err = io.Copy(file, buf)
 	if err != nil {
 		panic(err)
 	}
@@ -618,9 +639,9 @@ func hash(bytes []byte) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func compress(b []byte) bytes.Buffer {
-	var buf bytes.Buffer
-	w := zlib.NewWriter(&buf)
+func compress(b []byte) *bytes.Buffer {
+	var buf *bytes.Buffer
+	w := zlib.NewWriter(buf)
 	w.Write(b)
 	w.Close()
 	return buf
